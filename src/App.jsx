@@ -65,6 +65,14 @@ function normalizeDateValue(value) {
   const stringValue = String(value).trim();
   if (!stringValue) return "";
 
+  const numericFromString = Number(stringValue.replace(",", "."));
+  if (Number.isFinite(numericFromString) && numericFromString > 0) {
+    const dateParts = XLSX.SSF.parse_date_code(numericFromString);
+    if (dateParts) {
+      return formatDateString(dateParts.y, dateParts.m, dateParts.d);
+    }
+  }
+
   if (/^\d{4}-\d{2}-\d{2}$/.test(stringValue)) {
     return stringValue;
   }
