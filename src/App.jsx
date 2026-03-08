@@ -20,6 +20,8 @@ const REQUIRED_SIO_COLUMNS = [
   "paciente",
 ];
 
+const DATE_COLUMNS = new Set(["fecha_ingreso", "fecha_egreso"]);
+
 function normalizeHeader(value) {
   return String(value ?? "")
     .normalize("NFD")
@@ -33,6 +35,67 @@ function normalizeHeader(value) {
 function cleanValue(value) {
   if (value == null) return "";
   return typeof value === "string" ? value.trim() : value;
+}
+
+function formatDateString(year, month, day) {
+  const safeYear = String(year).padStart(4, "0");
+  const safeMonth = String(month).padStart(2, "0");
+  const safeDay = String(day).padStart(2, "0");
+  return `${safeYear}-${safeMonth}-${safeDay}`;
+}
+
+function normalizeDateValue(value) {
+  if (value == null || value === "") return "";
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return formatDateString(
+      value.getFullYear(),
+      value.getMonth() + 1,
+      value.getDate()
+    );
+  }
+
+  if (typeof value === "number") {
+    const dateParts = XLSX.SSF.parse_date_code(value);
+    if (dateParts) {
+      return formatDateString(dateParts.y, dateParts.m, dateParts.d);
+    }
+  }
+
+  const stringValue = String(value).trim();
+  if (!stringValue) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(stringValue)) {
+    return stringValue;
+  }
+
+  const normalized = stringValue.replace(/\./g, "/").replace(/-/g, "/");
+
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(normalized)) {
+    const [year, month, day] = normalized.split("/").map(Number);
+    return formatDateString(year, month, day);
+  }
+
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(normalized)) {
+    const [day, month, yearRaw] = normalized.split("/").map(Number);
+    const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+    return formatDateString(year, month, day);
+  }
+
+  return stringValue;
+}
+
+function extractMonth(dateValue) {
+  const normalized = normalizeDateValue(dateValue);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized.slice(0, 7);
+  }
+  return "Sin fecha";
+}
+
+function formatThousands(value) {
+  const num = toNumber(value);
+  return num.toLocaleString("es-CO");
 }
 
 function toNumber(value) {
@@ -57,7 +120,8 @@ function rowsFromSheet(sheet) {
     const obj = {};
 
     headers.forEach((h, i) => {
-      obj[h] = cleanValue(row[i]);
+      const value = cleanValue(row[i]);
+      obj[h] = DATE_COLUMNS.has(h) ? normalizeDateValue(value) : value;
     });
 
     return obj;
@@ -97,7 +161,7 @@ export default function App() {
 
   async function parseExcelFile(file) {
     const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data);
+    const workbook = XLSX.read(data, { cellDates: true });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     return rowsFromSheet(sheet);
   }
@@ -253,6 +317,68 @@ export default function App() {
     );
   }, [cruces]);
 
+  const admisionesPorEmpresaMes = useMemo(() => {
+    const map = new Map();
+
+    sioRows.forEach((row) => {
+      const empresa = row.empresa || row.centro_servicio || "Sin empresa";
+      const mes = extractMonth(row.fecha_ingreso);
+      const key = `${empresa}__${mes}`;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          empresa,
+          mes,
+          admisiones: new Set(),
+        });
+      }
+
+      const group = map.get(key);
+      group.admisiones.add(String(row.admision ?? "").trim());
+    });
+
+    return [...map.values()]
+      .map((item) => ({
+        empresa: item.empresa,
+        mes: item.mes,
+        total_admisiones: item.admisiones.size,
+      }))
+      .sort((a, b) => {
+        if (a.mes === b.mes) {
+          return b.total_admisiones - a.total_admisiones;
+        }
+        return a.mes < b.mes ? 1 : -1;
+      });
+  }, [sioRows]);
+
+  const consolidadoEmpresaPorMes = useMemo(() => {
+    const meses = [...new Set(admisionesPorEmpresaMes.map((row) => row.mes))].sort(
+      (a, b) => (a < b ? -1 : 1)
+    );
+    const map = new Map();
+
+    admisionesPorEmpresaMes.forEach((row) => {
+      if (!map.has(row.empresa)) {
+        const base = { empresa: row.empresa };
+
+        meses.forEach((mes) => {
+          base[mes] = 0;
+        });
+
+        base.total_admisiones = 0;
+        map.set(row.empresa, base);
+      }
+
+      const group = map.get(row.empresa);
+      group[row.mes] = toNumber(row.total_admisiones);
+      group.total_admisiones += toNumber(row.total_admisiones);
+    });
+
+    return [...map.values()].sort(
+      (a, b) => b.total_admisiones - a.total_admisiones
+    );
+  }, [admisionesPorEmpresaMes]);
+
   const sinFactura = useMemo(() => {
     return sioRows.filter((s) => {
       const matches = sistemaMap.get(s.admision);
@@ -304,7 +430,7 @@ export default function App() {
     XLSX.writeFile(wb, name + ".xlsx");
   }
 
-  function renderTable(rows) {
+  function renderTable(rows, formatter) {
     if (!rows.length) return <p>No hay datos</p>;
 
     const headers = Object.keys(rows[0]);
@@ -323,7 +449,7 @@ export default function App() {
           {rows.slice(0, 200).map((r, i) => (
             <tr key={i}>
               {headers.map((h) => (
-                <td key={h}>{r[h]}</td>
+                <td key={h}>{formatter ? formatter(h, r[h], r) : r[h]}</td>
               ))}
             </tr>
           ))}
@@ -418,7 +544,24 @@ export default function App() {
         Exportar Excel
       </button>
 
-      {renderTable(resumenFacturador)}
+      {renderTable(resumenFacturador, (header, value) => {
+        if (header === "total_servicios" || header === "total_factura") {
+          return formatThousands(value);
+        }
+
+        return value;
+      })}
+
+      <h2>Admisiones por Empresa y Mes</h2>
+
+      <button onClick={() => exportExcel("admisiones_empresa_mes", admisionesPorEmpresaMes)}>
+        Exportar Excel
+      </button>
+
+      {renderTable(admisionesPorEmpresaMes)}
+
+      <h3>Consolidado por Empresa (Admisiones por Mes y Total)</h3>
+      {renderTable(consolidadoEmpresaPorMes)}
 
       <h2>Admisiones sin factura</h2>
 
