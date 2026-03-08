@@ -101,6 +101,14 @@ function extractMonth(dateValue) {
   return "Sin fecha";
 }
 
+function toSortableDateNumber(dateValue) {
+  const normalized = normalizeDateValue(dateValue);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return Number(normalized.replace(/-/g, ""));
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 function formatThousands(value) {
   const num = toNumber(value);
   return num.toLocaleString("es-CO");
@@ -388,13 +396,24 @@ export default function App() {
   }, [admisionesPorEmpresaMes]);
 
   const sinFactura = useMemo(() => {
-    return sioRows.filter((s) => {
-      const matches = sistemaMap.get(s.admision);
+    return sioRows
+      .filter((s) => {
+        const matches = sistemaMap.get(s.admision);
 
-      if (!matches) return true;
+        if (!matches) return true;
 
-      return matches.some((m) => toNumber(m.vr_factura) === 0);
-    });
+        return matches.some((m) => toNumber(m.vr_factura) === 0);
+      })
+      .sort((a, b) => {
+        const servicioA = String(a.centro_servicio || "");
+        const servicioB = String(b.centro_servicio || "");
+        const byServicio = servicioA.localeCompare(servicioB, "es");
+        if (byServicio !== 0) return byServicio;
+
+        const dateA = toSortableDateNumber(a.fecha_ingreso);
+        const dateB = toSortableDateNumber(b.fecha_ingreso);
+        return dateA - dateB;
+      });
   }, [sioRows, sistemaMap]);
 
   const noCoinciden = useMemo(() => {
