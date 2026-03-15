@@ -143,15 +143,30 @@ button:disabled {
   padding: 6px 10px;
 }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-  display: block;
-  overflow-x: auto;
-  white-space: nowrap;
-  background: #ffffff;
+.table-block {
   border: 1px solid #d9e2ec;
   border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.table-scrollbar {
+  overflow-x: auto;
+}
+
+.table-scrollbar-top {
+  border-bottom: 1px solid #ecf0f4;
+}
+
+.table-scrollbar-bottom {
+  white-space: nowrap;
+}
+
+table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  background: #ffffff;
 }
 
 th,

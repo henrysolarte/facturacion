@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { Upload, FileSpreadsheet, Search } from "lucide-react";
 import "./App.css";
@@ -21,6 +21,20 @@ const REQUIRED_SIO_COLUMNS = [
 ];
 
 const DATE_COLUMNS = new Set(["fecha_ingreso", "fecha_egreso"]);
+const ID_COLUMNS = new Set(["admision"]);
+
+const COLUMN_ALIASES = {
+  admision: ["admision"],
+  usuario: ["usuario"],
+  fecha_ingreso: ["fecha_ingreso"],
+  fecha_egreso: ["fecha_egreso"],
+  estrato: ["estrato"],
+  permanencia: ["permanencia"],
+  centro_servicio: ["centro_servicio"],
+  paciente: ["paciente"],
+  vr_servicios: ["vr_servicios"],
+  vr_factura: ["vr_factura"],
+};
 
 function normalizeHeader(value) {
   return String(value ?? "")
@@ -35,6 +49,11 @@ function normalizeHeader(value) {
 function cleanValue(value) {
   if (value == null) return "";
   return typeof value === "string" ? value.trim() : value;
+}
+
+function normalizeIdentifier(value) {
+  if (value == null || value === "") return "";
+  return String(value).trim();
 }
 
 function formatDateString(year, month, day) {
@@ -128,26 +147,77 @@ function toNumber(value) {
 
 function rowsFromSheet(sheet) {
   const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-  const headerRow = raw[0] || [];
+  const { headers, startIndex } = detectHeaderRow(raw);
 
-  const headers = headerRow.map(normalizeHeader);
-
-  return raw.slice(1).map((row) => {
+  return raw.slice(startIndex + 1).map((row) => {
     const obj = {};
 
     headers.forEach((h, i) => {
       const value = cleanValue(row[i]);
-      obj[h] = DATE_COLUMNS.has(h) ? normalizeDateValue(value) : value;
+      if (DATE_COLUMNS.has(h)) {
+        obj[h] = normalizeDateValue(value);
+        return;
+      }
+
+      if (ID_COLUMNS.has(h)) {
+        obj[h] = normalizeIdentifier(value);
+        return;
+      }
+
+      obj[h] = value;
     });
 
     return obj;
+  }).filter((row) =>
+    Object.values(row).some((value) => String(value ?? "").trim() !== "")
+  );
+}
+
+function getCanonicalHeader(header) {
+  const normalized = normalizeHeader(header);
+
+  for (const [canonical, aliases] of Object.entries(COLUMN_ALIASES)) {
+    if (aliases.includes(normalized)) {
+      return canonical;
+    }
+  }
+
+  return normalized;
+}
+
+function detectHeaderRow(rawRows) {
+  let bestIndex = 0;
+  let bestHeaders = [];
+  let bestScore = -1;
+
+  rawRows.forEach((row, index) => {
+    const headers = row.map(getCanonicalHeader);
+    const uniqueHeaders = new Set(headers.filter(Boolean));
+    const score = [...uniqueHeaders].filter((header) =>
+      Object.hasOwn(COLUMN_ALIASES, header)
+    ).length;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+      bestHeaders = headers;
+    }
   });
+
+  return {
+    headers: bestHeaders,
+    startIndex: bestIndex,
+  };
 }
 
 function missingColumns(rows, requiredColumns) {
   const headers = Object.keys(rows[0] || {});
   const headersSet = new Set(headers);
   return requiredColumns.filter((col) => !headersSet.has(col));
+}
+
+function hasColumns(rows, requiredColumns) {
+  return missingColumns(rows, requiredColumns).length === 0;
 }
 
 function buildFacturadorName(row) {
@@ -159,6 +229,81 @@ function buildFacturadorName(row) {
   ]
     .filter((part) => String(part ?? "").trim() !== "")
     .join(" ");
+}
+
+function ScrollableTable({ rows, formatter }) {
+  const topScrollRef = useRef(null);
+  const bottomScrollRef = useRef(null);
+  const tableRef = useRef(null);
+  const [scrollWidth, setScrollWidth] = useState(0);
+
+  useEffect(() => {
+    function updateScrollWidth() {
+      if (!tableRef.current) return;
+      setScrollWidth(tableRef.current.scrollWidth);
+    }
+
+    updateScrollWidth();
+
+    if (!tableRef.current || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateScrollWidth();
+    });
+
+    observer.observe(tableRef.current);
+
+    return () => observer.disconnect();
+  }, [rows]);
+
+  function syncScroll(source, target) {
+    if (!source.current || !target.current) return;
+    target.current.scrollLeft = source.current.scrollLeft;
+  }
+
+  if (!rows.length) return <p>No hay datos</p>;
+
+  const headers = Object.keys(rows[0]);
+
+  return (
+    <div className="table-block">
+      <div
+        className="table-scrollbar table-scrollbar-top"
+        ref={topScrollRef}
+        onScroll={() => syncScroll(topScrollRef, bottomScrollRef)}
+      >
+        <div style={{ width: scrollWidth, height: 1 }} />
+      </div>
+
+      <div
+        className="table-scrollbar table-scrollbar-bottom"
+        ref={bottomScrollRef}
+        onScroll={() => syncScroll(bottomScrollRef, topScrollRef)}
+      >
+        <table ref={tableRef}>
+          <thead>
+            <tr>
+              {headers.map((h) => (
+                <th key={h}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+
+          <tbody>
+            {rows.slice(0, 200).map((r, i) => (
+              <tr key={i}>
+                {headers.map((h) => (
+                  <td key={h}>{formatter ? formatter(h, r[h], r) : r[h]}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -200,8 +345,8 @@ export default function App() {
   }
 
   async function handleLoadData() {
-    if (!sistemaFile || !sioFile) {
-      setLoadError("Selecciona los dos archivos antes de alimentar la consulta.");
+    if (!sistemaFile) {
+      setLoadError("Selecciona el archivo Sistema antes de alimentar la consulta.");
       return;
     }
 
@@ -210,10 +355,21 @@ export default function App() {
     setLoadMessage("");
 
     try {
-      const [nextSistemaRows, nextSioRows] = await Promise.all([
-        parseExcelFile(sistemaFile),
-        parseExcelFile(sioFile),
-      ]);
+      const nextSistemaRows = await parseExcelFile(sistemaFile);
+      const sistemaCanReplaceSio = hasColumns(
+        nextSistemaRows,
+        REQUIRED_SIO_COLUMNS
+      );
+
+      if (!sioFile && !sistemaCanReplaceSio) {
+        throw new Error(
+          "Selecciona el archivo SIO o carga un Sistema que también incluya las columnas de SIO."
+        );
+      }
+
+      const nextSioRows = sioFile
+        ? await parseExcelFile(sioFile)
+        : nextSistemaRows;
 
       const missingSistema = missingColumns(
         nextSistemaRows,
@@ -238,7 +394,9 @@ export default function App() {
       setSistemaRows(nextSistemaRows);
       setSioRows(nextSioRows);
       setLoadMessage(
-        `Consulta alimentada: ${nextSistemaRows.length} filas Sistema y ${nextSioRows.length} filas SIO.`
+        sioFile
+          ? `Consulta alimentada: ${nextSistemaRows.length} filas Sistema y ${nextSioRows.length} filas SIO.`
+          : `Consulta alimentada desde Sistema: ${nextSistemaRows.length} filas. Se reutilizó este archivo como fuente SIO porque ya contiene todas las columnas necesarias.`
       );
     } catch (error) {
       setLoadError(
@@ -294,6 +452,12 @@ export default function App() {
           ...(includeFacturador && { nombre_facturador: nombreFacturador }),
           admision: sio.admision,
           fecha_ingreso: sio.fecha_ingreso,
+          fecha_egreso: sio.fecha_egreso,
+          historia: sio.historia,
+          tipo_atencion: sio.tipo_de_atencion,
+          empresa: sio.empresa,
+          permanencia: sio.permanencia,
+          cuenta: sio.cuenta,
           sala: sio.centro_servicio,
           paciente: sio.paciente,
           vr_servicios: s.vr_servicios,
@@ -424,6 +588,13 @@ export default function App() {
         list.push({
           estado: "Existe en SIO y no en Sistema",
           admision: r.admision,
+          fecha_ingreso: r.fecha_ingreso,
+          fecha_egreso: r.fecha_egreso,
+          historia: r.historia || "",
+          tipo_atencion: r.tipo_de_atencion || "",
+          empresa: r.empresa || "",
+          permanencia: r.permanencia || "",
+          cuenta: r.cuenta || "",
           centro_servicio: r.centro_servicio || "",
           paciente: r.paciente,
         });
@@ -434,11 +605,26 @@ export default function App() {
         list.push({
           estado: "Existe en Sistema y no en SIO",
           admision: r.admision,
+          fecha_ingreso: r.fecha_ingreso || "",
+          fecha_egreso: r.fecha_egreso || "",
+          historia: r.historia || "",
+          tipo_atencion: r.tipo_atencion || "",
+          empresa: r.empresa || "",
+          permanencia: r.permanencia || "",
+          cuenta: r.cuenta || "",
           centro_servicio: "",
+          paciente: r.paciente || "",
         });
     });
 
-    return list;
+    return list.sort((a, b) => {
+      const servicioA = String(a.centro_servicio || "");
+      const servicioB = String(b.centro_servicio || "");
+      const byServicio = servicioA.localeCompare(servicioB, "es");
+      if (byServicio !== 0) return byServicio;
+
+      return String(a.admision || "").localeCompare(String(b.admision || ""), "es");
+    });
   }, [sioRows, sistemaRows]);
 
   const filtered = cruces.filter((r) =>
@@ -458,31 +644,7 @@ export default function App() {
   }
 
   function renderTable(rows, formatter) {
-    if (!rows.length) return <p>No hay datos</p>;
-
-    const headers = Object.keys(rows[0]);
-
-    return (
-      <table>
-        <thead>
-          <tr>
-            {headers.map((h) => (
-              <th key={h}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-
-        <tbody>
-          {rows.slice(0, 200).map((r, i) => (
-            <tr key={i}>
-              {headers.map((h) => (
-                <td key={h}>{formatter ? formatter(h, r[h], r) : r[h]}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
+    return <ScrollableTable rows={rows} formatter={formatter} />;
   }
 
   return (
