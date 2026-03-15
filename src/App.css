@@ -101,6 +101,15 @@ button:disabled {
   cursor: not-allowed;
 }
 
+select {
+  min-height: 36px;
+  border-radius: 8px;
+  border: 1px solid #c9d3df;
+  padding: 6px 10px;
+  background: #ffffff;
+  color: #123043;
+}
+
 .status {
   margin: 0;
   font-size: 0.95rem;
@@ -141,6 +150,21 @@ button:disabled {
   border-radius: 8px;
   border: 1px solid #c9d3df;
   padding: 6px 10px;
+}
+
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.report-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
 .table-block {
@@ -193,5 +217,11 @@ th {
 
   .stats {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .report-actions,
+  .report-group-actions {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

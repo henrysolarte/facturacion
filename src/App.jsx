@@ -231,6 +231,34 @@ function buildFacturadorName(row) {
     .join(" ");
 }
 
+function getHeaders(rows) {
+  return Object.keys(rows[0] || {});
+}
+
+function getDefaultField(rows) {
+  return getHeaders(rows)[0] || "";
+}
+
+function getFieldValues(rows, field) {
+  if (!rows.length || !field) return [];
+
+  return [...new Set(
+    rows
+      .map((row) => String(row[field] ?? "").trim() || "Sin dato")
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+const ALL_FILTER_VALUE = "__ALL__";
+
+function filterRowsByFieldValue(rows, field, value) {
+  if (!field || !value || value === ALL_FILTER_VALUE) return rows;
+
+  return rows.filter(
+    (row) => (String(row[field] ?? "").trim() || "Sin dato") === value
+  );
+}
+
 function ScrollableTable({ rows, formatter }) {
   const topScrollRef = useRef(null);
   const bottomScrollRef = useRef(null);
@@ -317,6 +345,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [loadMessage, setLoadMessage] = useState("");
+  const [reportConfig, setReportConfig] = useState({});
 
   const [search, setSearch] = useState("");
 
@@ -633,6 +662,56 @@ export default function App() {
     )
   );
 
+  useEffect(() => {
+    const reportRows = {
+      cruce: cruces,
+      resumen_facturador: resumenFacturador,
+      admisiones_empresa_mes: admisionesPorEmpresaMes,
+      consolidado_empresa_mes: consolidadoEmpresaPorMes,
+      sin_factura: sinFactura,
+      no_coinciden: noCoinciden,
+    };
+
+    setReportConfig((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      Object.entries(reportRows).forEach(([key, rows]) => {
+        const headers = getHeaders(rows);
+        const defaultField = headers[0] || "";
+        const currentField = next[key]?.field || "";
+        const field = headers.includes(currentField) ? currentField : defaultField;
+        const values = getFieldValues(rows, field);
+        const currentValue = next[key]?.value || "";
+        const value = values.includes(currentValue)
+          ? currentValue
+          : ALL_FILTER_VALUE;
+
+        if (!headers.length) {
+          if (next[key]?.field || next[key]?.value) {
+            next[key] = { field: "", value: "" };
+            changed = true;
+          }
+          return;
+        }
+
+        if (next[key]?.field !== field || next[key]?.value !== value) {
+          next[key] = { field, value };
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [
+    cruces,
+    resumenFacturador,
+    admisionesPorEmpresaMes,
+    consolidadoEmpresaPorMes,
+    sinFactura,
+    noCoinciden,
+  ]);
+
   function exportExcel(name, rows) {
     const ws = XLSX.utils.json_to_sheet(rows);
 
@@ -645,6 +724,94 @@ export default function App() {
 
   function renderTable(rows, formatter) {
     return <ScrollableTable rows={rows} formatter={formatter} />;
+  }
+
+  function getReportFilteredRows(reportKey, rows) {
+    const field = reportConfig[reportKey]?.field || "";
+    const value = reportConfig[reportKey]?.value || "";
+
+    return filterRowsByFieldValue(rows, field, value);
+  }
+
+  function renderReportActions(reportKey, exportName, rows, sourceRows = rows) {
+    const headers = getHeaders(sourceRows);
+    const selectedField =
+      reportConfig[reportKey]?.field || getDefaultField(sourceRows);
+    const fieldValues = getFieldValues(rows, selectedField);
+    const selectedValue =
+      reportConfig[reportKey]?.value ||
+      ALL_FILTER_VALUE;
+
+    return (
+      <div className="report-actions">
+        <button onClick={() => exportExcel(`${exportName}_general`, rows)}>
+          Exportar informe general
+        </button>
+
+        <div className="report-group-actions">
+          <select
+            value={selectedField}
+            onChange={(e) =>
+              setReportConfig((current) => {
+                const field = e.target.value;
+                const values = getFieldValues(rows, field);
+
+                return {
+                  ...current,
+                  [reportKey]: {
+                    field,
+                    value: ALL_FILTER_VALUE,
+                  },
+                };
+              })
+            }
+            disabled={!headers.length}
+          >
+            {headers.map((header) => (
+              <option key={header} value={header}>
+                {header}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={selectedValue}
+            onChange={(e) =>
+              setReportConfig((current) => ({
+                ...current,
+                [reportKey]: {
+                  field: selectedField,
+                  value: e.target.value,
+                },
+              }))
+            }
+            disabled={!fieldValues.length}
+          >
+            <option value={ALL_FILTER_VALUE}>Todos</option>
+            {fieldValues.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={() =>
+              exportExcel(
+                selectedValue === ALL_FILTER_VALUE
+                  ? `${exportName}_general`
+                  : `${exportName}_${selectedField}_${selectedValue}`,
+                filterRowsByFieldValue(rows, selectedField, selectedValue)
+              )
+            }
+            disabled={!rows.length || !selectedField}
+          >
+            Exportar informe filtrado
+          </button>
+
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -721,19 +888,19 @@ export default function App() {
 
       <h2>Cruce Sistema vs SIO</h2>
 
-      <button onClick={() => exportExcel("cruce", filtered)}>
-        Exportar Excel
-      </button>
+      {renderReportActions("cruce", "cruce", filtered, cruces)}
 
-      {renderTable(filtered)}
+      {renderTable(getReportFilteredRows("cruce", filtered))}
 
       <h2>Resumen por Facturador</h2>
 
-      <button onClick={() => exportExcel("resumen_facturador", resumenFacturador)}>
-        Exportar Excel
-      </button>
+      {renderReportActions(
+        "resumen_facturador",
+        "resumen_facturador",
+        resumenFacturador
+      )}
 
-      {renderTable(resumenFacturador, (header, value) => {
+      {renderTable(getReportFilteredRows("resumen_facturador", resumenFacturador), (header, value) => {
         if (header === "total_servicios" || header === "total_factura") {
           return formatThousands(value);
         }
@@ -743,30 +910,33 @@ export default function App() {
 
       <h2>Admisiones por Empresa y Mes</h2>
 
-      <button onClick={() => exportExcel("admisiones_empresa_mes", admisionesPorEmpresaMes)}>
-        Exportar Excel
-      </button>
+      {renderReportActions(
+        "admisiones_empresa_mes",
+        "admisiones_empresa_mes",
+        admisionesPorEmpresaMes
+      )}
 
-      {renderTable(admisionesPorEmpresaMes)}
+      {renderTable(getReportFilteredRows("admisiones_empresa_mes", admisionesPorEmpresaMes))}
 
       <h3>Consolidado por Empresa (Admisiones por Mes y Total)</h3>
-      {renderTable(consolidadoEmpresaPorMes)}
+      {renderReportActions(
+        "consolidado_empresa_mes",
+        "consolidado_empresa_mes",
+        consolidadoEmpresaPorMes
+      )}
+      {renderTable(getReportFilteredRows("consolidado_empresa_mes", consolidadoEmpresaPorMes))}
 
       <h2>Admisiones sin factura</h2>
 
-      <button onClick={() => exportExcel("sin_factura", sinFactura)}>
-        Exportar Excel
-      </button>
+      {renderReportActions("sin_factura", "sin_factura", sinFactura)}
 
-      {renderTable(sinFactura)}
+      {renderTable(getReportFilteredRows("sin_factura", sinFactura))}
 
       <h2>No coinciden</h2>
 
-      <button onClick={() => exportExcel("no_coinciden", noCoinciden)}>
-        Exportar Excel
-      </button>
+      {renderReportActions("no_coinciden", "no_coinciden", noCoinciden)}
 
-      {renderTable(noCoinciden)}
+      {renderTable(getReportFilteredRows("no_coinciden", noCoinciden))}
     </div>
   );
 }
